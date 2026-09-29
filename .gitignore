@@ -1,0 +1,12 @@
+**/target/
+.idea/
+.vscode/
+*.iml
+.DS_Store
+.env
+.env.*
+!.env.example
+.runtime/
+*.log
+*.pid
+.worktrees/

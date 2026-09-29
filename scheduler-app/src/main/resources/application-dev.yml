@@ -1,0 +1,15 @@
+# Local development only: HTTP on localhost, docs and explicitly configured seed account.
+server:
+  address: ${SERVER_ADDRESS:127.0.0.1}
+  servlet:
+    session:
+      cookie:
+        secure: false
+springdoc:
+  api-docs:
+    enabled: true
+  swagger-ui:
+    enabled: true
+bootstrap:
+  username: ${BOOTSTRAP_USERNAME:admin}
+  password: ${BOOTSTRAP_PASSWORD}
