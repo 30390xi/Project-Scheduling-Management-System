@@ -1,5 +1,6 @@
 package com.company.scheduler.identity.api;
 
+import com.company.scheduler.identity.service.LoginThrottleService;
 import com.company.scheduler.shared.api.ApiResponse;
 import com.company.scheduler.shared.error.BusinessException;
 import jakarta.servlet.http.HttpServletRequest;
@@ -31,11 +32,14 @@ public class AuthController {
     private final AuthenticationManager manager;
     private final SecurityContextRepository contexts;
     private final CsrfTokenRepository csrf;
+    private final LoginThrottleService throttle;
 
-    public AuthController(AuthenticationManager manager, SecurityContextRepository contexts, CsrfTokenRepository csrf) {
+    public AuthController(AuthenticationManager manager, SecurityContextRepository contexts,
+                          CsrfTokenRepository csrf, LoginThrottleService throttle) {
         this.manager = manager;
         this.contexts = contexts;
         this.csrf = csrf;
+        this.throttle = throttle;
     }
 
     @GetMapping("/csrf")
@@ -49,9 +53,12 @@ public class AuthController {
         if (body.password().getBytes(StandardCharsets.UTF_8).length > 72) {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "密码不能超过 72 个 UTF-8 字节");
         }
+        String remoteIp = request.getRemoteAddr();
+        throttle.checkAllowed(body.username(), remoteIp);
         try {
             Authentication authentication = manager.authenticate(
                     UsernamePasswordAuthenticationToken.unauthenticated(body.username(), body.password()));
+            throttle.onSuccess(body.username());
             new ChangeSessionIdAuthenticationStrategy().onAuthentication(authentication, request, response);
             var context = SecurityContextHolder.createEmptyContext();
             context.setAuthentication(authentication);
@@ -60,6 +67,7 @@ public class AuthController {
             csrf.saveToken(null, request, response);
             return ApiResponse.of(new LoginResponse(UUID.fromString(authentication.getName())));
         } catch (AuthenticationException ex) {
+            throttle.onFailure(body.username(), remoteIp);
             throw new BusinessException(HttpStatus.UNAUTHORIZED, "INVALID_CREDENTIALS", "账号或密码错误");
         }
     }

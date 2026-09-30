@@ -6,6 +6,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.http.MediaType;
+import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.security.authentication.AuthenticationManager;
 import org.springframework.security.authentication.ProviderManager;
 import org.springframework.security.authentication.dao.DaoAuthenticationProvider;
@@ -15,6 +16,7 @@ import org.springframework.security.core.userdetails.UserDetailsService;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.intercept.AuthorizationFilter;
 import org.springframework.security.web.context.HttpSessionSecurityContextRepository;
 import org.springframework.security.web.context.SecurityContextRepository;
 import org.springframework.security.web.csrf.CsrfTokenRepository;
@@ -39,13 +41,14 @@ public class SecurityConfiguration {
     CsrfTokenRepository csrfTokenRepository() { return new HttpSessionCsrfTokenRepository(); }
 
     @Bean
-    SecurityFilterChain filterChain(HttpSecurity http, ObjectMapper mapper,
+    SecurityFilterChain filterChain(HttpSecurity http, ObjectMapper mapper, JdbcTemplate jdbc,
                                     SecurityContextRepository contexts, CsrfTokenRepository csrf) throws Exception {
         http.formLogin(AbstractHttpConfigurer::disable)
                 .httpBasic(AbstractHttpConfigurer::disable)
                 .requestCache(AbstractHttpConfigurer::disable)
                 .securityContext(context -> context.securityContextRepository(contexts))
                 .csrf(config -> config.csrfTokenRepository(csrf))
+                .addFilterAfter(new PasswordChangeRequiredFilter(jdbc, mapper), AuthorizationFilter.class)
                 .authorizeHttpRequests(auth -> auth
                         .requestMatchers("/api/v1/auth/csrf", "/api/v1/auth/login", "/actuator/health", "/actuator/health/**", "/error").permitAll()
                         .requestMatchers("/swagger-ui/**", "/swagger-ui.html", "/v3/api-docs/**").permitAll()

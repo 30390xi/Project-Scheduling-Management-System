@@ -38,6 +38,11 @@ public class WorkspaceController {
     public ApiResponse<List<ProjectSummary>> projects(Authentication authentication,
                                                        @RequestHeader("X-Company-Id") UUID companyId) {
         var member = access.requireMember(UUID.fromString(authentication.getName()), companyId);
+        // 管理员需要管理入口，可列出公司全部项目；项目内容仍按项目成员授权，不因此放宽
+        if ("ADMIN".equals(member.role())) {
+            return ApiResponse.of(jdbc.query("SELECT id, name FROM project WHERE company_id = ? ORDER BY id",
+                    (rs, row) -> new ProjectSummary(rs.getObject("id", UUID.class), rs.getString("name")), companyId));
+        }
         return ApiResponse.of(jdbc.query("""
                 SELECT p.id, p.name FROM project p JOIN project_member pm
                   ON pm.company_id = p.company_id AND pm.project_id = p.id
