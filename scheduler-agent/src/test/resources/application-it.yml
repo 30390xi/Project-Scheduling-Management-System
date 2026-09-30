@@ -1,0 +1,20 @@
+spring:
+  main:
+    web-application-type: none
+  flyway:
+    enabled: true
+    clean-disabled: true
+    out-of-order: false
+    locations: classpath:db/itfixture,classpath:db/migration/agent
+scheduler:
+  agent:
+    jobs:
+      enabled: false
+      worker-identity: it-worker
+      retry-base-delay: 100ms
+    outbox:
+      enabled: false
+      retry-delay-ms: 200
+logging:
+  level:
+    com.company.scheduler.agent: warn
