@@ -106,7 +106,9 @@ public class AiAnalysisJobHandler implements JobHandler {
             throw new PermanentJobFailure("AI_RUN_STATE_UNEXPECTED", "运行 " + runId + " 无法进入执行态");
         }
 
-        AiCallBudget budget = AiCallBudget.of(properties, clock);
+        AiCallBudget budget = new AiCallBudget(properties.maxProviderCallsPerRun(),
+                runs.startDeadline(runId, properties.runDeadline()), clock, run.providerCalls(),
+                () -> runs.consumeCall(runId, properties.maxProviderCallsPerRun()));
         List<String> allowedSkills = allowedSkills(run.inputSnapshotJson());
         AiModelGateway.AnalysisRequest request = new AiModelGateway.AnalysisRequest(
                 runId, run.companyId(), taskText(run.inputSnapshotJson()), allowedSkills);
@@ -198,7 +200,8 @@ public class AiAnalysisJobHandler implements JobHandler {
                 sleepBriefly();
             }
         }
-        throw lastError;
+        throw new AiCallBudget.AiBudgetExceededException("AI_BUDGET_EXCEEDED",
+                "分析调用预算或截止时间已耗尽");
     }
 
     private void sleepBriefly() {
@@ -213,6 +216,7 @@ public class AiAnalysisJobHandler implements JobHandler {
     private void reuseResult(ClaimedJob job, AiAnalysisRun run, AiAnalysisRun reusable) {
         requireLease(job);
         transactions.executeWithoutResult(status -> {
+            requireLease(job);
             runs.markReused(run.id(), reusable.id());
             audit.record(run.companyId(), AuditEvent.ActorType.SYSTEM, null,
                     "AI_ANALYSIS_REUSED", "AI_ANALYSIS_RUN", run.id(),
@@ -235,10 +239,12 @@ public class AiAnalysisJobHandler implements JobHandler {
         double ratio = output.estimate().optimisticMinutes() == null ? Double.MAX_VALUE
                 : (double) output.estimate().pessimisticMinutes() / output.estimate().optimisticMinutes();
         var decision = confirmationPolicy.decide(ConfirmationPolicy.AdmissionInput.builder()
+                .projectAutoAssignEnabled(false)
+                .hardConstraintsPass(false)
                 .firstDecomposition(!output.subtasks().isEmpty())
                 .infoComplete(output.missingInformation().isEmpty())
                 .acceptanceCriteriaPresent(!output.acceptanceCriteria().isEmpty())
-                .allKeyAssumptionsConfirmed(output.assumptions().stream().noneMatch(assumption ->
+                .allKeyAssumptionsConfirmed(output.assumptions().stream().allMatch(assumption ->
                         Boolean.TRUE.equals(assumption.confirmed())))
                 .skillsMapped(!output.requiredSkills().isEmpty())
                 .qualityScore(quality.weighted())
@@ -266,6 +272,7 @@ public class AiAnalysisJobHandler implements JobHandler {
         String suggestionJson = AgentJson.toJson(suggestion);
 
         transactions.executeWithoutResult(status -> {
+            requireLease(job);
             boolean stored = runs.markSucceeded(run.id(), outcome.result().structuredJson(),
                     suggestionJson, outcome.usage() == null ? null : outcome.usage().toString(),
                     round3(quality.weighted()), budget.used());
@@ -289,6 +296,7 @@ public class AiAnalysisJobHandler implements JobHandler {
     private void failRun(ClaimedJob job, AiAnalysisRun run, String errorCode, String detail) {
         requireLease(job);
         transactions.executeWithoutResult(status -> {
+            requireLease(job);
             runs.markFailed(run.id(), errorCode, detail);
             audit.record(run.companyId(), AuditEvent.ActorType.SYSTEM, null,
                     "AI_ANALYSIS_FAILED", "AI_ANALYSIS_RUN", run.id(), null,

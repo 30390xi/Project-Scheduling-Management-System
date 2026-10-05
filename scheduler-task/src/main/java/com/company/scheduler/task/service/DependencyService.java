@@ -89,6 +89,7 @@ public class DependencyService {
 
         dependencies.replacePredecessors(companyId, task.projectId(), taskId, predecessorIds);
         tasks.touch(companyId, taskId);
+        tasks.invalidateSchedules(companyId, taskId);
         return taskService.detail(companyId, taskId);
     }
 }

@@ -48,7 +48,7 @@ public class MemberService {
     }
 
     /**
-     * 创建/邀请成员。username 已存在时直接加入本公司（沿用其现有密码，不返回临时密码）；
+     * 创建成员。已有全局账号须经本人接受邀请，不允许管理员直接建立成员关系；
      * 不存在时创建账号并生成一次性临时密码，首次登录强制改密。
      */
     @Transactional
@@ -57,6 +57,10 @@ public class MemberService {
         validateRole(role);
         UUID userId = jdbc.query("SELECT id FROM app_user WHERE username = ?",
                 rs -> rs.next() ? rs.getObject(1, UUID.class) : null, username);
+        if (userId != null) {
+            throw new BusinessException(HttpStatus.CONFLICT, "ACCOUNT_INVITATION_REQUIRED",
+                    "已有账号必须由本人接受邀请，不能直接添加；当前请创建独立账号");
+        }
         String temporaryPassword = null;
         boolean accountCreated = false;
         if (userId == null) {
@@ -136,6 +140,15 @@ public class MemberService {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "INVALID_REQUEST", "重置成员密码必须填写原因");
         }
         MemberRow target = loadMember(actor.companyId(), memberId);
+        // A company administrator has no authority over a shared, global identity.
+        jdbc.queryForObject("SELECT id FROM app_user WHERE id = ? FOR UPDATE", UUID.class, target.userId());
+        Integer otherMemberships = jdbc.queryForObject(
+                "SELECT count(*) FROM company_member WHERE user_id = ? AND company_id <> ?",
+                Integer.class, target.userId(), actor.companyId());
+        if (otherMemberships != null && otherMemberships > 0) {
+            throw new BusinessException(HttpStatus.FORBIDDEN, "GLOBAL_ACCOUNT_RESET_FORBIDDEN",
+                    "此账号关联多个公司，公司管理员不能重置其全局密码，请使用本人改密流程");
+        }
         String temporaryPassword = TemporaryPassword.generate();
         jdbc.update("""
                 UPDATE app_user SET password_hash = ?, must_change_password = true, password_changed_at = now(),

@@ -78,6 +78,7 @@ class TaskCatalogServiceIT extends TaskModuleITSupport {
         var task = toReady(f, createLeaf(f, "进行中任务", 300, List.of()));
         f.jdbc().update("UPDATE task SET schedule_status = 'PLANNED' WHERE company_id = ? AND id = ?",
                 f.companyId(), task.id());
+        f.allocatedToday().add(task.id());
         var started = f.transitions().transition(f.adminUserId(), f.companyId(), task.id(),
                 new TransitionRequest(TransitionAction.START, null, null, null), task.version());
         f.remainingEstimates().confirm(f.adminUserId(), f.companyId(), task.id(),

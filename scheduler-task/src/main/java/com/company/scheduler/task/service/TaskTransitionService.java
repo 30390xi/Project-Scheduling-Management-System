@@ -39,12 +39,14 @@ public class TaskTransitionService {
     private final CompanyClock clock;
     private final TaskService taskService;
     private final ObjectMapper mapper;
+    private final com.company.scheduler.shared.contract.AllocationLifecycle allocations;
 
     public TaskTransitionService(TaskRepository tasks, TaskDependencyRepository dependencies,
                                  TaskStatusEventRepository events, TaskRevisionRepository revisions,
                                  TaskRemainingEstimateRepository remainingEstimates,
                                  TaskAccessService accessService, PlanningGuardService guard,
-                                 CompanyClock clock, TaskService taskService, ObjectMapper mapper) {
+                                 CompanyClock clock, TaskService taskService, ObjectMapper mapper,
+                                 com.company.scheduler.shared.contract.AllocationLifecycle allocations) {
         this.tasks = tasks;
         this.dependencies = dependencies;
         this.events = events;
@@ -55,11 +57,13 @@ public class TaskTransitionService {
         this.clock = clock;
         this.taskService = taskService;
         this.mapper = mapper;
+        this.allocations = allocations;
     }
 
     @Transactional
     public TaskDetail transition(UUID userId, UUID companyId, UUID taskId, TransitionRequest req,
                                  long expectedVersion) {
+        accessService.requireMembership(userId, companyId);
         guard.lockAndBump(companyId);
         TaskRow task = taskService.lockAndCheckVersion(companyId, taskId, expectedVersion);
         var access = accessService.requireProjectAccess(userId, companyId, task.projectId());
@@ -108,8 +112,11 @@ public class TaskTransitionService {
                 tasks.updateState(companyId, taskId, newStatus, task.scheduleStatus(), null, null,
                         task.estimatedMinutes(), null, null, null);
             }
-            case START -> tasks.updateState(companyId, taskId, newStatus, task.scheduleStatus(), null, null,
-                    task.remainingMinutes(), null, null, null);
+            case START -> {
+                allocations.start(companyId, taskId, task.effectiveAssignee());
+                tasks.updateState(companyId, taskId, newStatus, task.scheduleStatus(), null, null,
+                        task.remainingMinutes(), null, null, null);
+            }
             case BLOCK -> tasks.updateState(companyId, taskId, newStatus, task.scheduleStatus(), task.status(),
                     req.reason(), task.remainingMinutes(), null, null, null);
             case UNBLOCK -> tasks.updateState(companyId, taskId, newStatus, task.scheduleStatus(), null, null,
@@ -124,9 +131,13 @@ public class TaskTransitionService {
                 remainingEstimates.insert(companyId, UUID.randomUUID(), taskId, version,
                         clock.today(companyId), remaining, access.memberId());
             }
-            case ACCEPT -> tasks.updateState(companyId, taskId, newStatus, ScheduleStatus.CLOSED, null, null,
-                    0, Instant.now(), null, null);
+            case ACCEPT -> {
+                allocations.close(companyId, taskId);
+                tasks.updateState(companyId, taskId, newStatus, ScheduleStatus.CLOSED, null, null,
+                        0, Instant.now(), null, null);
+            }
             case CANCEL -> {
+                allocations.close(companyId, taskId);
                 tasks.updateState(companyId, taskId, newStatus, ScheduleStatus.CLOSED, null, null,
                         task.remainingMinutes(), null, Instant.now(), req.reason());
                 cascadeCancelChildren(companyId, task, req.reason(), access);
@@ -155,6 +166,7 @@ public class TaskTransitionService {
         if (parent.nodeType() != NodeType.PARENT) return;
         for (TaskRow child : tasks.listSubtree(companyId, parent.id())) {
             if (child.status() == TaskStatus.DONE || child.status() == TaskStatus.CANCELED) continue;
+            allocations.close(companyId, child.id());
             tasks.updateState(companyId, child.id(), TaskStatus.CANCELED, ScheduleStatus.CLOSED, null, null,
                     child.remainingMinutes(), null, Instant.now(), reason);
             events.insert(companyId, child.id(), child.status(), TaskStatus.CANCELED, access.memberId(),

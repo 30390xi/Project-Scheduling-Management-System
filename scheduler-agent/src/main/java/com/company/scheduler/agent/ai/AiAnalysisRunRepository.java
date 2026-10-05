@@ -26,6 +26,11 @@ public class AiAnalysisRunRepository {
         this.jdbc = jdbc;
     }
 
+    public void lockSubmission(UUID companyId, String scopedKey) {
+        jdbc.query("SELECT pg_advisory_xact_lock(hashtextextended(:key, 0))",
+                new MapSqlParameterSource("key", companyId + ":" + scopedKey), rs -> {});
+    }
+
     public void insert(AiAnalysisRun run) {
         jdbc.update("""
                 INSERT INTO ai_analysis_run(id, company_id, job_id, submitted_by_member_id,
@@ -60,6 +65,25 @@ public class AiAnalysisRunRepository {
     }
 
     /** 幂等进入执行态：PENDING 或已被上一次未完成尝试置为 RUNNING 都允许（租约才是并发权威）。 */
+    public java.time.Instant startDeadline(UUID runId, java.time.Duration duration) {
+        return jdbc.queryForObject("""
+                UPDATE ai_analysis_run SET run_deadline = COALESCE(run_deadline,
+                    clock_timestamp() + (:seconds * interval '1 second'))
+                WHERE id = :id RETURNING run_deadline
+                """, new MapSqlParameterSource("id", runId).addValue("seconds", duration.toSeconds()),
+                java.sql.Timestamp.class).toInstant();
+    }
+
+    public void consumeCall(UUID runId, int maxCalls) {
+        int updated = jdbc.update("""
+                UPDATE ai_analysis_run SET provider_calls = provider_calls + 1
+                WHERE id = :id AND status = 'RUNNING' AND provider_calls < :max
+                  AND run_deadline > clock_timestamp()
+                """, new MapSqlParameterSource("id", runId).addValue("max", maxCalls));
+        if (updated != 1) throw new AiCallBudget.AiBudgetExceededException(
+                "AI_BUDGET_EXCEEDED", "分析运行调用预算或截止时间已耗尽");
+    }
+
     public boolean markRunning(UUID runId) {
         return jdbc.update("""
                 UPDATE ai_analysis_run SET status = 'RUNNING', updated_at = now()
@@ -73,7 +97,7 @@ public class AiAnalysisRunRepository {
                 UPDATE ai_analysis_run SET
                     status = 'SUCCEEDED', raw_output = :rawOutput::jsonb,
                     validated_output = :validated::jsonb, usage = :usage::jsonb,
-                    quality_score = :quality, provider_calls = :calls,
+                    quality_score = :quality,
                     error_code = NULL, error_detail = NULL, updated_at = now()
                 WHERE id = :id AND status = 'RUNNING'
                 """, new MapSqlParameterSource()

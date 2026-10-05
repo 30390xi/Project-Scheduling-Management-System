@@ -1,7 +1,7 @@
 package com.company.scheduler.task;
 
 import com.company.scheduler.shared.contract.CompanyAccess;
-import com.company.scheduler.shared.contract.JobDispatcher;
+import com.company.scheduler.shared.contract.AnalysisRequests;
 import com.company.scheduler.shared.error.BusinessException;
 import com.company.scheduler.task.service.CompanyClock;
 import com.company.scheduler.task.service.DependencyService;
@@ -40,7 +40,7 @@ import org.testcontainers.containers.PostgreSQLContainer;
 /**
  * 模块集成测试基座：真实 PostgreSQL 17（Testcontainers，Docker 不可用即失败，不静默跳过）。
  * 基础表来自 task-it-base.sql（镜像 app V1），任务表来自正式迁移 db/migration/task。
- * CompanyAccess 为与 identity 同语义的测试替身；JobDispatcher 缺省（D 未合并）。
+ * CompanyAccess 为与 identity 同语义的测试替身；AnalysisRequests 缺省（D 未合并）。
  */
 abstract class TaskModuleITSupport {
     private static PostgreSQLContainer<?> PG;
@@ -98,30 +98,30 @@ abstract class TaskModuleITSupport {
     }
 
     /** D 的可靠作业未合并：测试中不提供 dispatcher，服务走“无作业”路径。 */
-    static ObjectProvider<JobDispatcher> noJobDispatcher() {
+    static ObjectProvider<AnalysisRequests> noAnalysisRequests() {
         return new ObjectProvider<>() {
             @Override
-            public JobDispatcher getObject(Object... args) throws BeansException {
-                throw new IllegalStateException("JobDispatcher 不可用");
+            public AnalysisRequests getObject(Object... args) throws BeansException {
+                throw new IllegalStateException("AnalysisRequests 不可用");
             }
 
             @Override
-            public JobDispatcher getObject() throws BeansException {
-                throw new IllegalStateException("JobDispatcher 不可用");
+            public AnalysisRequests getObject() throws BeansException {
+                throw new IllegalStateException("AnalysisRequests 不可用");
             }
 
             @Override
-            public JobDispatcher getIfAvailable() {
+            public AnalysisRequests getIfAvailable() {
                 return null;
             }
 
             @Override
-            public JobDispatcher getIfUnique() {
+            public AnalysisRequests getIfUnique() {
                 return null;
             }
 
             @Override
-            public Iterator<JobDispatcher> iterator() {
+            public Iterator<AnalysisRequests> iterator() {
                 return Collections.emptyIterator();
             }
         };
@@ -133,7 +133,7 @@ abstract class TaskModuleITSupport {
                    UUID outsiderUserId, UUID outsiderMemberId,
                    TaskService tasks, TaskTransitionService transitions, DependencyService dependencies,
                    WorkLogService workLogs, RemainingEstimateService remainingEstimates,
-                   TaskCatalogService catalog) {}
+                   TaskCatalogService catalog, java.util.Set<UUID> allocatedToday) {}
 
     protected Fixture newFixture(DataSource ds) {
         var jdbc = new JdbcTemplate(ds);
@@ -173,9 +173,17 @@ abstract class TaskModuleITSupport {
         var clock = new CompanyClock(jdbc);
         var mapper = new ObjectMapper().registerModule(new JavaTimeModule());
         var taskService = new TaskService(tasks, revisions, skills, dependencies, events, workLogRepo,
-                remainingRepo, accessService, guard, mapper, noJobDispatcher());
+                remainingRepo, accessService, guard, mapper, noAnalysisRequests());
+        var allocatedToday = new java.util.HashSet<UUID>();
+        var allocationPort = new com.company.scheduler.shared.contract.AllocationLifecycle() {
+            public void start(UUID company, UUID task, UUID member) {
+                if (!allocatedToday.contains(task)) throw new BusinessException(
+                        org.springframework.http.HttpStatus.CONFLICT, "NO_ALLOCATION_TODAY", "今日无排期");
+            }
+            public void close(UUID company, UUID task) { allocatedToday.remove(task); }
+        };
         var transitionService = new TaskTransitionService(tasks, dependencies, events, revisions, remainingRepo,
-                accessService, guard, clock, taskService, mapper);
+                accessService, guard, clock, taskService, mapper, allocationPort);
         var dependencyService = new DependencyService(tasks, dependencies, accessService, guard, taskService);
         var workLogService = new WorkLogService(tasks, workLogRepo, accessService, clock);
         var remainingService = new RemainingEstimateService(tasks, remainingRepo, accessService, guard, clock,
@@ -183,7 +191,7 @@ abstract class TaskModuleITSupport {
         var catalog = new TaskCatalogService(tasks, dependencies, skills, access, jdbc);
         return new Fixture(jdbc, tx, companyId, projectId, adminUserId, adminMemberId, memberUserId, memberId,
                 outsiderUserId, outsiderMemberId, taskService, transitionService, dependencyService,
-                workLogService, remainingService, catalog);
+                workLogService, remainingService, catalog, allocatedToday);
     }
 
     private static void insertMember(JdbcTemplate jdbc, UUID companyId, UUID userId, UUID memberId, String role) {

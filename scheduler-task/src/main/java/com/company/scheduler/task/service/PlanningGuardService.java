@@ -18,6 +18,14 @@ public class PlanningGuardService {
 
     /** 锁定 guard 行并递增 revision；guard 缺失说明公司初始化不完整，明确失败。 */
     public long lockAndBump(UUID companyId) {
+        long revision = lock(companyId);
+        Long next = jdbc.queryForObject(
+                "UPDATE planning_guard SET revision = revision + 1 WHERE company_id = ? RETURNING revision",
+                Long.class, companyId);
+        return next == null ? revision + 1 : next;
+    }
+
+    public long lock(UUID companyId) {
         Long revision = jdbc.query(
                 "SELECT revision FROM planning_guard WHERE company_id = ? FOR UPDATE",
                 rs -> rs.next() ? rs.getLong("revision") : null, companyId);
@@ -25,9 +33,6 @@ public class PlanningGuardService {
             throw new BusinessException(HttpStatus.INTERNAL_SERVER_ERROR, "GUARD_NOT_INITIALIZED",
                     "公司排期数据未初始化，请联系管理员");
         }
-        Long next = jdbc.queryForObject(
-                "UPDATE planning_guard SET revision = revision + 1 WHERE company_id = ? RETURNING revision",
-                Long.class, companyId);
-        return next == null ? revision + 1 : next;
+        return revision;
     }
 }

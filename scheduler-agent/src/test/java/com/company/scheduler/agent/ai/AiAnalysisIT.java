@@ -47,7 +47,8 @@ class AiAnalysisIT extends AgentIntegrationTestBase {
     @Test
     void analyzesSubmitsJobOnceAndProducesSuggestionWithNotification() {
         scriptedGateway.enqueue(AiSamples.VALID_SINGLE_LEAF);
-        var submission = service.submit(companyId, memberId, UUID.randomUUID(),
+        UUID taskId = UUID.randomUUID();
+        var submission = service.submit(companyId, memberId, taskId,
                 "实现登录接口，支持账号密码登录", AiSamples.SKILL_CATALOG, "idem-analysis-1");
 
         assertThat(submission.created()).isTrue();
@@ -55,7 +56,7 @@ class AiAnalysisIT extends AgentIntegrationTestBase {
         assertThat(job.status()).isEqualTo(AsyncJobStatus.QUEUED);
 
         // 重复提交（网络重试场景）：同一幂等键返回原运行，不重复入队
-        var retry = service.submit(companyId, memberId, UUID.randomUUID(),
+        var retry = service.submit(companyId, memberId, taskId,
                 "实现登录接口，支持账号密码登录", AiSamples.SKILL_CATALOG, "idem-analysis-1");
         assertThat(retry.created()).isFalse();
         assertThat(retry.runId()).isEqualTo(submission.runId());
@@ -172,6 +173,78 @@ class AiAnalysisIT extends AgentIntegrationTestBase {
         jdbc.getJdbcTemplate().update("INSERT INTO company(id) VALUES (?)", otherCompany);
         assertThat(service.load(otherCompany, submission.runId())).isEmpty();
         assertThat(service.load(companyId, submission.runId())).isPresent();
+    }
+
+    @Test
+    void reviewProviderBudgetSurvivesJobRetry() {
+        scriptedGateway.enqueueTransientFailures(8);
+        var submission = service.submit(companyId, memberId, UUID.randomUUID(),
+                "review retry budget", AiSamples.SKILL_CATALOG, "review-budget");
+        runner.pollOnce();
+        assertThat(scriptedGateway.calls.get()).isEqualTo(4);
+        jdbc.getJdbcTemplate().update("UPDATE async_job SET next_run_at = now() - interval '1 second' WHERE id = ?",
+                submission.jobId());
+        runner.pollOnce();
+        assertThat(scriptedGateway.calls.get())
+                .as("A single analysis run must stay within its four-call budget across job retries")
+                .isLessThanOrEqualTo(4);
+    }
+
+    @Test
+    void reviewUnconfirmedAssumptionMustBlockAdmission() {
+        scriptedGateway.enqueue(AiSamples.VALID_SINGLE_LEAF);
+        var submission = service.submit(companyId, memberId, UUID.randomUUID(),
+                "review unconfirmed assumptions", AiSamples.SKILL_CATALOG, "review-assumption");
+        runner.pollOnce();
+        assertThat(service.load(companyId, submission.runId()).orElseThrow().validatedOutputJson())
+                .contains("UNCONFIRMED_KEY_ASSUMPTIONS");
+    }
+
+    @Test
+    void reviewChangedSkillCatalogMustNotReuseOldSuggestion() {
+        scriptedGateway.enqueue(AiSamples.VALID_SINGLE_LEAF);
+        var first = service.submit(companyId, memberId, UUID.randomUUID(),
+                "review changing skill catalog", AiSamples.SKILL_CATALOG, "review-cache-1");
+        runner.pollOnce();
+        assertThat(service.load(companyId, first.runId()).orElseThrow().status()).isEqualTo("SUCCEEDED");
+        scriptedGateway.enqueue(AiSamples.VALID_SINGLE_LEAF.replace("JAVA", "PYTHON"));
+        var second = service.submit(companyId, memberId, UUID.randomUUID(),
+                "review changing skill catalog", List.of("PYTHON"), "review-cache-2");
+        runner.pollOnce();
+        assertThat(service.load(companyId, second.runId()).orElseThrow().validatedOutputJson())
+                .as("A result from the old skill catalog must be revalidated against the current catalog")
+                .doesNotContain("JAVA");
+    }
+
+    @Test
+    void reviewIdempotencyKeyWithDifferentPayloadMustConflict() {
+        UUID taskId = UUID.randomUUID();
+        service.submit(companyId, memberId, taskId, "review task original", AiSamples.SKILL_CATALOG,
+                "review-key-conflict");
+        assertThatThrownBy(() -> service.submit(companyId, memberId, taskId,
+                "review task completely changed", AiSamples.SKILL_CATALOG, "review-key-conflict"))
+                .as("Same key with changed request must return an explicit conflict")
+                .isInstanceOf(com.company.scheduler.shared.error.BusinessException.class);
+    }
+
+    @Test
+    void resumedWorkerUsesPersistedBudgetAndAbsoluteDeadline() {
+        scriptedGateway.script.add(new IllegalStateException("simulated interrupted worker"));
+        scriptedGateway.enqueueTransientFailures(4);
+        var submission = service.submit(companyId, memberId, UUID.randomUUID(),
+                "persisted budget after interruption", AiSamples.SKILL_CATALOG, "resumed-budget");
+        runner.pollOnce();
+        assertThat(service.load(companyId, submission.runId()).orElseThrow().providerCalls()).isEqualTo(1);
+        var deadline = jdbc.getJdbcTemplate().queryForObject("SELECT run_deadline FROM ai_analysis_run WHERE id=?",
+                java.sql.Timestamp.class, submission.runId());
+        jdbc.getJdbcTemplate().update("UPDATE async_job SET next_run_at=now()-interval '1 second' WHERE id=?",submission.jobId());
+        runner.pollOnce();
+        var run = service.load(companyId, submission.runId()).orElseThrow();
+        assertThat(run.providerCalls()).isEqualTo(4);
+        assertThat(scriptedGateway.calls.get()).isEqualTo(4);
+        assertThat(run.status()).isEqualTo("FAILED");
+        assertThat(jdbc.getJdbcTemplate().queryForObject("SELECT run_deadline FROM ai_analysis_run WHERE id=?",
+                java.sql.Timestamp.class, submission.runId())).isEqualTo(deadline);
     }
 
     private void awaitEligible(UUID jobId) throws InterruptedException {

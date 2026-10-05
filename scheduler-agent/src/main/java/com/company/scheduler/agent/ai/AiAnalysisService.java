@@ -60,29 +60,46 @@ public class AiAnalysisService {
             throw new BusinessException(HttpStatus.BAD_REQUEST, "AI_IDEMPOTENCY_KEY_REQUIRED",
                     "idempotencyKey（1..128 字符）必填");
         }
-        List<String> skills = allowedSkillCodes == null ? List.of() : List.copyOf(allowedSkillCodes);
+        List<String> skills = allowedSkillCodes == null ? List.of() : allowedSkillCodes.stream().distinct().sorted().toList();
         String model = properties.gatewayConfigured() ? properties.model() : DisabledAiModelGateway.MODEL;
 
+        String requestHash = AiAnalysisRunRepository.hashInput(
+                AgentJson.toJson(java.util.Arrays.asList(taskAggregateId, taskText, skills)), model,
+                AiPrompts.PROMPT_VERSION);
+        String scopedKey = AiAnalysisRunRepository.hashInput(idempotencyKey,
+                submittedByMemberId.toString(), "analysis-submit");
         return transactions.execute(status -> {
+            runs.lockSubmission(companyId, scopedKey);
             Optional<com.company.scheduler.agent.job.AsyncJob> existing =
-                    jobs.findByKey(companyId, JobTypes.AI_ANALYSIS, idempotencyKey);
+                    jobs.findByKey(companyId, JobTypes.AI_ANALYSIS, scopedKey);
             if (existing.isPresent()) {
                 UUID previousRunId = extractRunId(existing.get().payloadJson());
+                var previous = runs.findById(previousRunId).orElseThrow();
+                if (!requestHash.equals(AgentJson.toJsonNode(previous.inputSnapshotJson())
+                        .path("requestHash").asText())) {
+                    throw new BusinessException(HttpStatus.CONFLICT, "IDEMPOTENCY_KEY_REUSED",
+                            "幂等键已用于不同请求");
+                }
                 return new Submission(previousRunId, existing.get().id(), false);
             }
             String sanitized = sanitizer.sanitize(taskText);
-            String hash = AiAnalysisRunRepository.hashInput(sanitized, model, AiPrompts.PROMPT_VERSION);
+            String cacheInput = AgentJson.toJson(java.util.Arrays.asList(sanitized, skills,
+                    AiPrompts.SCHEMA_VERSION, properties.bufferRatio(),
+                    properties.autoAssignQualityThreshold(), properties.maxPessimisticOptimisticRatio(),
+                    properties.maxLeafTaskMinutes(), properties.maxSubtasks()));
+            String hash = AiAnalysisRunRepository.hashInput(cacheInput, model, AiPrompts.PROMPT_VERSION);
             UUID runId = UUID.randomUUID();
             Map<String, Object> snapshot = new HashMap<>();
             snapshot.put("taskText", sanitized);
             snapshot.put("allowedSkillCodes", skills);
+            snapshot.put("requestHash", requestHash);
             runs.insert(new AiAnalysisRun(runId, companyId, null, submittedByMemberId, taskAggregateId,
                     hash, AgentJson.toJson(snapshot), model, AiPrompts.PROMPT_VERSION,
                     AiPrompts.SCHEMA_VERSION, "PENDING", 0, null, null, null, null, null, null,
                     null, null));
             String payload = "{\"runId\":\"" + runId + "\"}";
             var enqueued = jobs.enqueue(companyId, JobTypes.AI_ANALYSIS, runId, 0,
-                    idempotencyKey, payload, jobProperties.defaultMaxAttempts());
+                    scopedKey, payload, jobProperties.defaultMaxAttempts());
             runs.attachJob(runId, enqueued.jobId());
             audit.record(companyId, AuditEvent.ActorType.USER, submittedByMemberId,
                     "AI_ANALYSIS_SUBMITTED", "AI_ANALYSIS_RUN", runId,

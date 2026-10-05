@@ -325,6 +325,30 @@ class IdentityStage1IT {
                 .statusCode()).isEqualTo(403);
     }
 
+    @Test
+    void reviewCompanyAdminCannotTakeOverAnotherCompanyAccount() throws Exception {
+        UUID attackerCompany = newCompany("review attacker company");
+        UUID victimCompany = newCompany("review victim company");
+        newUser("review-attacker", "Review-attacker-pass1");
+        newUser("review-victim", "Review-victim-pass1");
+        addMember(attackerCompany, userId("review-attacker"), "ADMIN");
+        addMember(victimCompany, userId("review-victim"), "ADMIN");
+        var attacker = loginOk("review-attacker", "Review-attacker-pass1");
+        var added = write(attacker, "POST", "/api/v1/members", attackerCompany,
+                "{\"username\":\"review-victim\",\"role\":\"MEMBER\"}");
+        assertThat(added.statusCode()).isEqualTo(409);
+        assertThat(json(added).path("code").asText()).isEqualTo("ACCOUNT_INVITATION_REQUIRED");
+        assertThat(get(attacker, "/api/v1/projects", victimCompany).statusCode()).isEqualTo(404);
+        // Even a legacy, already-shared account cannot have its global password reset by one tenant.
+        UUID sharedMember = addMember(attackerCompany, userId("review-victim"), "MEMBER");
+        var reset = write(attacker, "POST", "/api/v1/members/" + sharedMember + "/password-reset",
+                attackerCompany, "{\"reason\":\"review security test\"}");
+        assertThat(reset.statusCode()).isEqualTo(403);
+        assertThat(json(reset).path("code").asText()).isEqualTo("GLOBAL_ACCOUNT_RESET_FORBIDDEN");
+        var victim = loginOk("review-victim", "Review-victim-pass1");
+        assertThat(get(victim, "/api/v1/projects", victimCompany).statusCode()).isEqualTo(200);
+    }
+
     // ---------- fixtures & http helpers ----------
 
     private UUID newCompany(String name) {

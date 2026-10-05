@@ -59,12 +59,13 @@ class AiDisabledGatewayIT extends AgentIntegrationTestBase {
 
     @Test
     void duplicateSubmitWhileDisabledStillDeduplicates() {
-        var first = service.submit(companyId, memberId, UUID.randomUUID(),
+        UUID taskId = UUID.randomUUID();
+        var first = service.submit(companyId, memberId, taskId,
                 "实现登录接口，支持账号密码登录", AiSamples.SKILL_CATALOG, "disabled-dup");
-        var second = service.submit(companyId, memberId, UUID.randomUUID(),
+        var second = service.submit(companyId, memberId, taskId,
                 "实现登录接口，支持账号密码登录", AiSamples.SKILL_CATALOG, "disabled-dup");
         assertThat(second.created()).isFalse();
         assertThat(second.runId()).isEqualTo(first.runId());
-        assertThat(jobs.findByKey(companyId, "AI_ANALYSIS", "disabled-dup")).isPresent();
+        assertThat(jobs.findById(first.jobId())).isPresent();
     }
 }

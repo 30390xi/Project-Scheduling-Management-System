@@ -161,4 +161,25 @@ class FoundationIT {
     }
 
     private JsonNode json(HttpResponse<String> response) throws Exception { return mapper.readTree(response.body()); }
+    @Autowired com.company.scheduler.task.service.TaskService reviewTasks;
+    @Autowired com.company.scheduler.agent.job.JobRunner reviewRunner;
+
+    @Test
+    void reviewTaskSubmissionMustDispatchARecognizedAnalysisJob() {
+        UUID userId = jdbc.queryForObject("SELECT id FROM app_user WHERE username = ?",
+                UUID.class, "foundation-test");
+        var draft = reviewTasks.create(userId, DevBootstrap.COMPANY_ID,
+                new com.company.scheduler.task.api.dto.CreateTaskRequest(DevBootstrap.PROJECT_ID,
+                        null, "review integrated submission", "Implement login API", "BACKEND", null,
+                        null, null, null, 60, null, null, "Login succeeds", java.util.List.of()), null);
+        reviewTasks.submit(userId, DevBootstrap.COMPANY_ID, draft.id(), draft.version());
+        reviewRunner.pollOnce();
+        String error = jdbc.queryForObject("""
+                SELECT j.last_error FROM async_job j JOIN ai_analysis_run r ON r.job_id = j.id
+                WHERE r.task_aggregate_id = ?
+                """, String.class, draft.id());
+        assertThat(error).as("Submitted task must reach analysis handler instead of an unknown job type")
+                .isNotEqualTo("UNKNOWN_JOB_TYPE:TASK_ANALYSIS");
+    }
+
 }

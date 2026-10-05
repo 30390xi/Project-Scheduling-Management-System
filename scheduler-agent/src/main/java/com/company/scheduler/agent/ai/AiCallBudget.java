@@ -5,7 +5,7 @@ import java.time.Instant;
 
 /**
  * 单次分析运行的调用预算（TRD 7.6）：最多 N 次外部调用 + 整体截止时间。
- * 作业重试不能重新获得无限预算：每次运行新建一个预算对象，计数从 0 开始但受上限约束。
+ * 生产预算从持久化运行恢复；每次调用先原子扣减数据库预算。
  */
 public final class AiCallBudget {
 
@@ -13,14 +13,21 @@ public final class AiCallBudget {
     private final Instant deadline;
     private final Clock clock;
     private int used;
+    private final Runnable reserveCall;
 
     public AiCallBudget(int maxCalls, Instant deadline, Clock clock) {
+        this(maxCalls, deadline, clock, 0, () -> {});
+    }
+
+    public AiCallBudget(int maxCalls, Instant deadline, Clock clock, int used, Runnable reserveCall) {
         if (maxCalls < 1) {
             throw new IllegalArgumentException("maxCalls must be >= 1");
         }
         this.maxCalls = maxCalls;
         this.deadline = deadline;
         this.clock = clock;
+        this.used = used;
+        this.reserveCall = reserveCall;
     }
 
     public static AiCallBudget of(AiGatewayProperties properties, Clock clock) {
@@ -42,6 +49,7 @@ public final class AiCallBudget {
             throw new AiBudgetExceededException("AI_RUN_TIMEOUT",
                     "分析运行超过截止时间 " + deadline);
         }
+        reserveCall.run();
         used++;
     }
 

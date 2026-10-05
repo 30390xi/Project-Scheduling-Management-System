@@ -187,7 +187,21 @@ public class TaskRepository {
                 """, deltaMinutes, companyId, id);
     }
 
+    public void invalidateSchedules(UUID companyId, UUID id) {
+        jdbc.update("""
+            WITH RECURSIVE affected(id) AS (
+                SELECT id FROM task WHERE company_id = ? AND id = ?
+                UNION
+                SELECT d.successor_id FROM task_dependency d JOIN affected a ON d.predecessor_id = a.id
+                WHERE d.company_id = ?
+            )
+            UPDATE task SET schedule_status = 'STALE', version = version + 1, updated_at = now()
+            WHERE company_id = ? AND id IN (SELECT id FROM affected) AND schedule_status = 'PLANNED'
+            """, companyId, id, companyId, companyId);
+    }
+
     public void updateRemainingMinutes(UUID companyId, UUID id, int remainingMinutes) {
+        invalidateSchedules(companyId, id);
         jdbc.update("""
                 UPDATE task SET remaining_minutes = ?, updated_at = now(), version = version + 1
                 WHERE company_id = ? AND id = ?

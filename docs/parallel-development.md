@@ -31,10 +31,10 @@
 | 接口 | 实现者 | 消费者 | 当前状态 |
 | --- | --- | --- | --- |
 | CompanyAccess | A | B/C/D | 已提供成员及项目访问实现 |
-| TaskCatalog | B | C | 只有接口；按真实已确认任务构建快照 |
-| PlanningService | C | B/D | 只有接口；请求模拟返回 SimulationJob.jobId，作业成功后获取独立 planId |
-| AiModelGateway | D | D 的分析编排 | 默认关闭适配器，调用明确返回 503 |
-| JobDispatcher | D | B/C | 只有接口；须与调用者事务协作持久化 |
+| TaskCatalog | B | C | B 已实现；完整排期快照与任务写回通过新增 TaskPlanningPort |
+| PlanningService | C | B/D | C 已实现；请求模拟返回 SimulationJob.jobId，成功后查询独立 planId，提交时重校验 |
+| AiModelGateway | D | D 的分析编排 | 支持可配置网关；默认关闭，运行明确失败并支持人工估算 |
+| JobDispatcher | D | B/C | D 已实现数据库作业；与调用者事务协作持久化 |
 
 接口是第一版集成边界，完整领域字段仍按 TRD 补齐，不能强行用不完整 DTO 承载全量规则。第一轮先实现本模块领域能力，用测试替身替代尚未合并的其他模块实现；不要在生产容器中注册虚假成功实现。
 
@@ -71,3 +71,5 @@ Flyway 默认禁止乱序迁移。分支合并后，集成人检查版本顺序�
 - 有业务测试；涉及容量的变更有真实 PostgreSQL 并发测试。
 - 接口和生产类无临时成功 stub；模型不通时明确降级。
 - 功能与 PRD/TRD 一致，不能通过改变上限、跳过依赖或删除历史来消除冲突。
+
+本轮集成契约及人工确认/排期流程详见 [集成契约](integration-contracts.md) 与 [操作说明](integrated-workflow.md)。原四份任务书保留作为需求记录，不代表各分支独立目录已自动同步此集成版本。

@@ -1,6 +1,6 @@
 package com.company.scheduler.task.service;
 
-import com.company.scheduler.shared.contract.JobDispatcher;
+import com.company.scheduler.shared.contract.AnalysisRequests;
 import com.company.scheduler.shared.error.BusinessException;
 import com.company.scheduler.task.api.dto.CreateTaskRequest;
 import com.company.scheduler.task.api.dto.Paged;
@@ -54,13 +54,13 @@ public class TaskService {
     private final TaskAccessService accessService;
     private final PlanningGuardService guard;
     private final ObjectMapper mapper;
-    private final ObjectProvider<JobDispatcher> jobDispatcher;
+    private final ObjectProvider<AnalysisRequests> jobDispatcher;
 
     public TaskService(TaskRepository tasks, TaskRevisionRepository revisions, TaskSkillRepository skills,
                        TaskDependencyRepository dependencies, TaskStatusEventRepository events,
                        WorkLogRepository workLogs, TaskRemainingEstimateRepository remainingEstimates,
                        TaskAccessService accessService, PlanningGuardService guard, ObjectMapper mapper,
-                       ObjectProvider<JobDispatcher> jobDispatcher) {
+                       ObjectProvider<AnalysisRequests> jobDispatcher) {
         this.tasks = tasks;
         this.revisions = revisions;
         this.skills = skills;
@@ -162,6 +162,8 @@ public class TaskService {
 
     @Transactional
     public TaskDetail update(UUID userId, UUID companyId, UUID taskId, UpdateTaskRequest req, long expectedVersion) {
+        accessService.requireMembership(userId, companyId);
+        guard.lock(companyId);
         TaskRow task = lockAndCheckVersion(companyId, taskId, expectedVersion);
         var access = accessService.requireProjectAccess(userId, companyId, task.projectId());
         if (!access.canManage() && !task.createdBy().equals(access.memberId())) {
@@ -188,6 +190,7 @@ public class TaskService {
                 snapshotOf(tasks.find(companyId, taskId).orElseThrow(),
                         req.skills() == null ? toSkillDtos(skills.listByTask(companyId, taskId)) : req.skills()));
         if (task.status() != TaskStatus.DRAFT) {
+            tasks.invalidateSchedules(companyId, taskId);
             guard.lockAndBump(companyId);
         }
         return detail(companyId, taskId);
@@ -197,6 +200,8 @@ public class TaskService {
 
     @Transactional
     public TaskDetail submit(UUID userId, UUID companyId, UUID taskId, long expectedVersion) {
+        accessService.requireMembership(userId, companyId);
+        guard.lockAndBump(companyId);
         TaskRow task = lockAndCheckVersion(companyId, taskId, expectedVersion);
         var access = accessService.requireProjectAccess(userId, companyId, task.projectId());
         if (!access.canManage() && !task.createdBy().equals(access.memberId())) {
@@ -215,14 +220,14 @@ public class TaskService {
         long taskNo = task.taskNo() == null ? tasks.nextTaskNo(companyId) : task.taskNo();
         tasks.markSubmitted(companyId, taskId, taskNo);
         events.insert(companyId, taskId, task.status(), TaskStatus.SUBMITTED, access.memberId(), null);
-        guard.lockAndBump(companyId);
         recomputeAncestors(companyId, task, access.memberId());
 
         // D 的可靠作业未合并时不返回假 jobId：仅登记 SUBMITTED，分析由后续契约集成触发。
-        JobDispatcher dispatcher = jobDispatcher.getIfAvailable();
+        AnalysisRequests dispatcher = jobDispatcher.getIfAvailable();
         if (dispatcher != null) {
-            dispatcher.enqueue(companyId, "TASK_ANALYSIS", taskId, task.version() + 1,
-                    "task-submit:" + taskId + ":" + (task.version() + 1));
+            dispatcher.submit(new AnalysisRequests.Request(userId, companyId, task.projectId(),
+                    access.memberId(), taskId, task.version() + 1,
+                    task.title() + "\n" + task.description()));
         }
         return detail(companyId, taskId);
     }

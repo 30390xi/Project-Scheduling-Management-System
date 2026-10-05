@@ -49,6 +49,7 @@ class TaskFlowIT extends TaskModuleITSupport {
     }
 
     private void setPlanned(Fixture f, UUID taskId) {
+        f.allocatedToday().add(taskId);
         f.jdbc().update("UPDATE task SET schedule_status = 'PLANNED' WHERE company_id = ? AND id = ?",
                 f.companyId(), taskId);
     }
@@ -531,4 +532,19 @@ class TaskFlowIT extends TaskModuleITSupport {
                 null, null, 100);
         assertThat(drafts.items()).extracting(t -> t.status()).containsOnly(TaskStatus.DRAFT);
     }
+    @Test
+    void reviewStartRequiresActualAllocationToday() {
+        var f = newFixture(ds);
+        var draft = createTask(f, f.adminUserId(), "review missing allocation", 60);
+        var submitted = f.tasks().submit(f.adminUserId(), f.companyId(), draft.id(), draft.version());
+        var ready = f.transitions().transition(f.adminUserId(), f.companyId(), draft.id(),
+                new TransitionRequest(TransitionAction.MARK_READY, null, null, null), submitted.version());
+        setPlanned(f, draft.id());
+        f.allocatedToday().remove(draft.id());
+        assertThatThrownBy(() -> f.transitions().transition(f.adminUserId(), f.companyId(), draft.id(),
+                new TransitionRequest(TransitionAction.START, null, null, null), ready.version()))
+                .as("PLANNED flag alone must not permit starting without today's reservation")
+                .isInstanceOf(BusinessException.class);
+    }
+
 }
