@@ -1,0 +1,153 @@
+diff --git a/scheduler-agent/src/test/java/com/company/scheduler/agent/ai/AiAnalysisIT.java b/scheduler-agent/src/test/java/com/company/scheduler/agent/ai/AiAnalysisIT.java
+index a8ada89..0b1d4e4 100644
+--- a/scheduler-agent/src/test/java/com/company/scheduler/agent/ai/AiAnalysisIT.java
++++ b/scheduler-agent/src/test/java/com/company/scheduler/agent/ai/AiAnalysisIT.java
+@@ -174,6 +174,58 @@ class AiAnalysisIT extends AgentIntegrationTestBase {
+         assertThat(service.load(companyId, submission.runId())).isPresent();
+     }
+ 
++    @Test
++    void reviewProviderBudgetSurvivesJobRetry() {
++        scriptedGateway.enqueueTransientFailures(8);
++        var submission = service.submit(companyId, memberId, UUID.randomUUID(),
++                "review retry budget", AiSamples.SKILL_CATALOG, "review-budget");
++        runner.pollOnce();
++        assertThat(scriptedGateway.calls.get()).isEqualTo(4);
++        jdbc.getJdbcTemplate().update("UPDATE async_job SET next_run_at = now() - interval '1 second' WHERE id = ?",
++                submission.jobId());
++        runner.pollOnce();
++        assertThat(scriptedGateway.calls.get())
++                .as("A single analysis run must stay within its four-call budget across job retries")
++                .isLessThanOrEqualTo(4);
++    }
++
++    @Test
++    void reviewUnconfirmedAssumptionMustBlockAdmission() {
++        scriptedGateway.enqueue(AiSamples.VALID_SINGLE_LEAF);
++        var submission = service.submit(companyId, memberId, UUID.randomUUID(),
++                "review unconfirmed assumptions", AiSamples.SKILL_CATALOG, "review-assumption");
++        runner.pollOnce();
++        assertThat(service.load(companyId, submission.runId()).orElseThrow().validatedOutputJson())
++                .contains("UNCONFIRMED_KEY_ASSUMPTIONS");
++    }
++
++    @Test
++    void reviewChangedSkillCatalogMustNotReuseOldSuggestion() {
++        scriptedGateway.enqueue(AiSamples.VALID_SINGLE_LEAF);
++        var first = service.submit(companyId, memberId, UUID.randomUUID(),
++                "review changing skill catalog", AiSamples.SKILL_CATALOG, "review-cache-1");
++        runner.pollOnce();
++        assertThat(service.load(companyId, first.runId()).orElseThrow().status()).isEqualTo("SUCCEEDED");
++        scriptedGateway.enqueue(AiSamples.VALID_SINGLE_LEAF.replace("JAVA", "PYTHON"));
++        var second = service.submit(companyId, memberId, UUID.randomUUID(),
++                "review changing skill catalog", List.of("PYTHON"), "review-cache-2");
++        runner.pollOnce();
++        assertThat(service.load(companyId, second.runId()).orElseThrow().validatedOutputJson())
++                .as("A result from the old skill catalog must be revalidated against the current catalog")
++                .doesNotContain("JAVA");
++    }
++
++    @Test
++    void reviewIdempotencyKeyWithDifferentPayloadMustConflict() {
++        UUID taskId = UUID.randomUUID();
++        service.submit(companyId, memberId, taskId, "review task original", AiSamples.SKILL_CATALOG,
++                "review-key-conflict");
++        assertThatThrownBy(() -> service.submit(companyId, memberId, taskId,
++                "review task completely changed", AiSamples.SKILL_CATALOG, "review-key-conflict"))
++                .as("Same key with changed request must return an explicit conflict")
++                .isInstanceOf(com.company.scheduler.shared.error.BusinessException.class);
++    }
++
+     private void awaitEligible(UUID jobId) throws InterruptedException {
+         long deadline = System.currentTimeMillis() + 10_000;
+         while (System.currentTimeMillis() < deadline) {
+diff --git a/scheduler-app/src/test/java/com/company/scheduler/FoundationIT.java b/scheduler-app/src/test/java/com/company/scheduler/FoundationIT.java
+index 7056dc3..b6a7150 100644
+--- a/scheduler-app/src/test/java/com/company/scheduler/FoundationIT.java
++++ b/scheduler-app/src/test/java/com/company/scheduler/FoundationIT.java
+@@ -161,4 +161,23 @@ class FoundationIT {
+     }
+ 
+     private JsonNode json(HttpResponse<String> response) throws Exception { return mapper.readTree(response.body()); }
++    @Autowired com.company.scheduler.task.service.TaskService reviewTasks;
++    @Autowired com.company.scheduler.agent.job.JobRunner reviewRunner;
++
++    @Test
++    void reviewTaskSubmissionMustDispatchARecognizedAnalysisJob() {
++        UUID userId = jdbc.queryForObject("SELECT id FROM app_user WHERE username = ?",
++                UUID.class, "foundation-test");
++        var draft = reviewTasks.create(userId, DevBootstrap.COMPANY_ID,
++                new com.company.scheduler.task.api.dto.CreateTaskRequest(DevBootstrap.PROJECT_ID,
++                        null, "review integrated submission", "Implement login API", "BACKEND", null,
++                        null, null, null, 60, null, null, "Login succeeds", java.util.List.of()), null);
++        reviewTasks.submit(userId, DevBootstrap.COMPANY_ID, draft.id(), draft.version());
++        reviewRunner.pollOnce();
++        String error = jdbc.queryForObject("SELECT last_error FROM async_job WHERE aggregate_id = ?",
++                String.class, draft.id());
++        assertThat(error).as("Submitted task must reach analysis handler instead of an unknown job type")
++                .isNotEqualTo("UNKNOWN_JOB_TYPE:TASK_ANALYSIS");
++    }
++
+ }
+diff --git a/scheduler-identity/src/test/java/com/company/scheduler/identity/IdentityStage1IT.java b/scheduler-identity/src/test/java/com/company/scheduler/identity/IdentityStage1IT.java
+index ee6abfb..46be672 100644
+--- a/scheduler-identity/src/test/java/com/company/scheduler/identity/IdentityStage1IT.java
++++ b/scheduler-identity/src/test/java/com/company/scheduler/identity/IdentityStage1IT.java
+@@ -325,6 +325,34 @@ class IdentityStage1IT {
+                 .statusCode()).isEqualTo(403);
+     }
+ 
++    @Test
++    void reviewCompanyAdminCannotTakeOverAnotherCompanyAccount() throws Exception {
++        UUID attackerCompany = newCompany("review attacker company");
++        UUID victimCompany = newCompany("review victim company");
++        newUser("review-attacker", "Review-attacker-pass1");
++        newUser("review-victim", "Review-victim-pass1");
++        addMember(attackerCompany, userId("review-attacker"), "ADMIN");
++        addMember(victimCompany, userId("review-victim"), "ADMIN");
++        var attacker = loginOk("review-attacker", "Review-attacker-pass1");
++        var added = write(attacker, "POST", "/api/v1/members", attackerCompany,
++                "{\"username\":\"review-victim\",\"role\":\"MEMBER\"}");
++        assertThat(added.statusCode()).isEqualTo(200);
++        String addedMemberId = json(added).at("/data/memberId").asText();
++        var reset = write(attacker, "POST", "/api/v1/members/" + addedMemberId + "/password-reset",
++                attackerCompany, "{\"reason\":\"review security test\"}");
++        assertThat(reset.statusCode()).isEqualTo(200);
++        String temporary = json(reset).at("/data/temporaryPassword").asText();
++        var impersonated = loginOk("review-victim", temporary);
++        var changed = write(impersonated, "POST", "/api/v1/me/password", null,
++                mapper.writeValueAsString(java.util.Map.of("currentPassword", temporary,
++                        "newPassword", "Review-new-victim-pass1")));
++        assertThat(changed.statusCode()).isEqualTo(200);
++        var stolenSession = loginOk("review-victim", "Review-new-victim-pass1");
++        assertThat(get(stolenSession, "/api/v1/projects", victimCompany).statusCode())
++                .as("Company A admin must not obtain authenticated access to company B")
++                .isNotEqualTo(200);
++    }
++
+     // ---------- fixtures & http helpers ----------
+ 
+     private UUID newCompany(String name) {
+diff --git a/scheduler-task/src/test/java/com/company/scheduler/task/TaskFlowIT.java b/scheduler-task/src/test/java/com/company/scheduler/task/TaskFlowIT.java
+index 3008517..36329ff 100644
+--- a/scheduler-task/src/test/java/com/company/scheduler/task/TaskFlowIT.java
++++ b/scheduler-task/src/test/java/com/company/scheduler/task/TaskFlowIT.java
+@@ -531,4 +531,18 @@ class TaskFlowIT extends TaskModuleITSupport {
+                 null, null, 100);
+         assertThat(drafts.items()).extracting(t -> t.status()).containsOnly(TaskStatus.DRAFT);
+     }
++    @Test
++    void reviewStartRequiresActualAllocationToday() {
++        var f = newFixture(ds);
++        var draft = createTask(f, f.adminUserId(), "review missing allocation", 60);
++        var submitted = f.tasks().submit(f.adminUserId(), f.companyId(), draft.id(), draft.version());
++        var ready = f.transitions().transition(f.adminUserId(), f.companyId(), draft.id(),
++                new TransitionRequest(TransitionAction.MARK_READY, null, null, null), submitted.version());
++        setPlanned(f, draft.id());
++        assertThatThrownBy(() -> f.transitions().transition(f.adminUserId(), f.companyId(), draft.id(),
++                new TransitionRequest(TransitionAction.START, null, null, null), ready.version()))
++                .as("PLANNED flag alone must not permit starting without today's reservation")
++                .isInstanceOf(BusinessException.class);
++    }
++
+ }
