@@ -86,7 +86,8 @@ public class AiAnalysisService {
             String cacheInput = AgentJson.toJson(java.util.Arrays.asList(sanitized, skills,
                     AiPrompts.SCHEMA_VERSION, properties.bufferRatio(),
                     properties.autoAssignQualityThreshold(), properties.maxPessimisticOptimisticRatio(),
-                    properties.maxLeafTaskMinutes(), properties.maxSubtasks()));
+                    properties.maxLeafTaskMinutes(), properties.maxSubtasks(), properties.baseUrl(),
+                    properties.thinkingMode(), properties.maxOutputTokens(), properties.jsonMode()));
             String hash = AiAnalysisRunRepository.hashInput(cacheInput, model, AiPrompts.PROMPT_VERSION);
             UUID runId = UUID.randomUUID();
             Map<String, Object> snapshot = new HashMap<>();

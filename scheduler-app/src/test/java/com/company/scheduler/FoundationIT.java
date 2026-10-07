@@ -51,6 +51,7 @@ class FoundationIT {
         var client = client();
         assertThat(get(client, "/actuator/health").statusCode()).isEqualTo(200);
         var unauthorized = get(client, "/api/v1/me/companies");
+        assertThat(get(client, "/api/v1/me").statusCode()).isEqualTo(401);
         assertThat(unauthorized.statusCode()).isEqualTo(401);
         assertThat(json(unauthorized).path("code").asText()).isEqualTo("UNAUTHENTICATED");
         assertThat(unauthorized.headers().firstValue("X-Request-Id")).isPresent();
@@ -61,6 +62,10 @@ class FoundationIT {
     @Test
     void logsInPersistsSessionAndReturnsAuthorizedWorkspace() throws Exception {
         var client = login();
+        var current = get(client, "/api/v1/me");
+        assertThat(current.statusCode()).isEqualTo(200);
+        assertThat(json(current).at("/data/userId").asText()).isEqualTo(jdbc.queryForObject(
+                "SELECT id::text FROM app_user WHERE username = 'foundation-test'", String.class));
         var companies = get(client, "/api/v1/me/companies");
         assertThat(companies.statusCode()).isEqualTo(200);
         assertThat(json(companies).at("/data/0/id").asText()).isEqualTo(DevBootstrap.COMPANY_ID.toString());

@@ -7,7 +7,7 @@
 | 需求文档 | [PRD](./prd.md) |
 | 强制技术栈 | Spring Boot 3、Java 21 |
 | 架构选择 | 模块化单体、PostgreSQL、数据库异步作业、模型网关 |
-| 前端边界 | 不指定框架；提供 REST API、OpenAPI 契约及异步进度查询 |
+| 前端边界 | Vue 3 + TypeScript + Vite；会话/CSRF，同源代理，hash 路由；详见 [前端实现](docs/frontend.md) |
 
 > 本次明确要求的 Java 21 优先于原通用 JDK 8 约定。本文是待实现的技术设计，不代表已经部署或通过测试。文中 SQL、JSON 与伪代码用于明确实现契约，完整建表迁移和接口代码在开发阶段生成。
 

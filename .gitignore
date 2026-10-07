@@ -34,3 +34,8 @@ replay_pid*
 *.log
 *.pid
 .worktrees/
+# Frontend dependencies, outputs and local browser artifacts
+frontend/node_modules/
+frontend/dist/
+frontend/test-results/
+frontend/playwright-report/

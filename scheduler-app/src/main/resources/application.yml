@@ -57,6 +57,19 @@ springdoc:
     enabled: false
   swagger-ui:
     enabled: false
+scheduler:
+  agent:
+    ai:
+      provider: ${AI_PROVIDER:disabled}
+      base-url: ${AI_BASE_URL:}
+      api-key: ${AI_API_KEY:}
+      model: ${AI_MODEL:}
+      json-mode: ${AI_JSON_MODE:true}
+      thinking-mode: ${AI_THINKING_MODE:provider-default}
+      max-output-tokens: ${AI_MAX_OUTPUT_TOKENS:8192}
+      request-timeout: ${AI_REQUEST_TIMEOUT:45s}
+      run-deadline: ${AI_RUN_DEADLINE:180s}
+      max-provider-calls-per-run: ${AI_MAX_CALLS_PER_RUN:4}
 logging:
   pattern:
     level: "%5p [requestId:%X{requestId:-}]"

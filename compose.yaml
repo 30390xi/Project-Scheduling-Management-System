@@ -26,10 +26,27 @@ services:
       DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in .env}
       BOOTSTRAP_USERNAME: ${BOOTSTRAP_USERNAME:-admin}
       BOOTSTRAP_PASSWORD: ${BOOTSTRAP_PASSWORD:?Set BOOTSTRAP_PASSWORD in .env}
+      AI_PROVIDER: ${AI_PROVIDER:-disabled}
+      AI_BASE_URL: ${AI_BASE_URL:-}
+      AI_MODEL: ${AI_MODEL:-}
+      AI_API_KEY: ${AI_API_KEY:-}
+      AI_JSON_MODE: ${AI_JSON_MODE:-true}
+      AI_THINKING_MODE: ${AI_THINKING_MODE:-provider-default}
+      AI_MAX_OUTPUT_TOKENS: ${AI_MAX_OUTPUT_TOKENS:-8192}
+      AI_REQUEST_TIMEOUT: ${AI_REQUEST_TIMEOUT:-45s}
+      AI_RUN_DEADLINE: ${AI_RUN_DEADLINE:-180s}
+      AI_MAX_CALLS_PER_RUN: ${AI_MAX_CALLS_PER_RUN:-4}
     ports:
       - "127.0.0.1:${SERVER_PORT:-8080}:8080"
     depends_on:
       postgres:
         condition: service_healthy
+  web:
+    profiles: [app]
+    build: ./frontend
+    ports:
+      - "127.0.0.1:${FRONTEND_PORT:-5173}:80"
+    depends_on:
+      - app
 volumes:
   postgres-data:

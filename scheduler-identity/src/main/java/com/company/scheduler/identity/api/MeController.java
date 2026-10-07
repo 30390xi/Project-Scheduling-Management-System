@@ -9,6 +9,7 @@ import jakarta.validation.constraints.Size;
 import java.util.UUID;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
@@ -21,6 +22,14 @@ public class MeController {
     public MeController(PasswordService passwords) {
         this.passwords = passwords;
     }
+
+    /** Restore the current session identity without trusting client-side stored user IDs. */
+    @GetMapping
+    public ApiResponse<CurrentUser> current(Authentication authentication) {
+        return ApiResponse.of(new CurrentUser(UUID.fromString(authentication.getName())));
+    }
+
+    public record CurrentUser(UUID userId) {}
 
     @PostMapping("/password")
     public ApiResponse<String> changePassword(Authentication authentication,

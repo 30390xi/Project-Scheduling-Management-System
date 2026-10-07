@@ -32,6 +32,8 @@
 
 模型配置沿用 `scheduler.agent.ai.*`：provider、base-url、api-key、model。密钥通过环境/秘密管理传入；provider 为 `openai-compatible` 且配置齐全才会调用真实供应商。默认关闭时不会生成假分析结果。
 
+本地和 Docker 统一使用 `AI_PROVIDER`、`AI_BASE_URL`、`AI_API_KEY`、`AI_MODEL` 等环境变量。DeepSeek、GLM 标准 API 的选择、配置和一次性合成任务联调见 [模型接入指南](model-integration.md)。GLM Coding Plan 套餐不能作为本系统自建应用的运行时额度。
+
 作业默认后台轮询；测试使用 `scheduler.agent.jobs.enabled=false` 后手动 poll 保证时序确定。分析外部调用预算和截止保存在 ai_analysis_run，同一运行的重试不会重置额度。缓存包含技能目录和影响结果的策略参数。
 
 新增 SQL 放在 agent、planning 和 app 的 integration 迁移目录。历史上已经应用到共享环境的脚本不应改名或改内容；部署前应在上一发布版本数据库副本验证升级。完整测试使用 PostgreSQL 17 Testcontainers。

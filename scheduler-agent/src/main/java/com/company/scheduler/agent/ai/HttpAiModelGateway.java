@@ -42,7 +42,7 @@ public final class HttpAiModelGateway implements AiModelGateway {
         factory.setConnectTimeout((int) timeout.toMillis());
         factory.setReadTimeout((int) timeout.toMillis());
         return RestClient.builder()
-                .baseUrl(baseUrl)
+                .baseUrl(baseUrl.replaceAll("/+$", ""))
                 .defaultHeader("Authorization", "Bearer " + apiKey)
                 .requestFactory(factory)
                 .build();
@@ -97,10 +97,12 @@ public final class HttpAiModelGateway implements AiModelGateway {
             if (responseError.getStatusCode().value() == 429) {
                 throw new AiGatewayTransientException("模型服务限流（HTTP 429）");
             }
-            throw new AiGatewayTransientException("模型调用失败: " + responseError.getMessage());
+            throw new AiGatewayTransientException("模型调用失败（HTTP "
+                    + responseError.getStatusCode().value() + "）");
         } catch (RuntimeException networkError) {
             // 包含 ResourceAccessException：连接失败/读超时
-            throw new AiGatewayTransientException("模型网络错误: " + networkError.getMessage(), networkError);
+            // 不保留可能带 URL、凭据或供应商正文的原始异常消息/堆栈链。
+            throw new AiGatewayTransientException("模型网络连接失败或请求超时");
         }
         return parseOutcome(responseBody);
     }
@@ -108,12 +110,15 @@ public final class HttpAiModelGateway implements AiModelGateway {
     private String buildRequestBody(String systemPrompt, String userPrompt) {
         String responseFormat = Boolean.TRUE.equals(properties.jsonMode())
                 ? ",\"response_format\":{\"type\":\"json_object\"}" : "";
+        String thinking = "provider-default".equals(properties.thinkingMode()) ? ""
+                : ",\"thinking\":{\"type\":" + jsonString(properties.thinkingMode()) + "}";
         // 提示与正文已转义为 JSON 字符串值；模型名等配置值由管理员配置
         return "{\"model\":" + jsonString(properties.model())
                 + ",\"messages\":[{\"role\":\"system\",\"content\":"
                 + jsonString(systemPrompt)
                 + "},{\"role\":\"user\",\"content\":" + jsonString(userPrompt) + "}]"
-                + responseFormat + "}";
+                + ",\"stream\":false,\"max_tokens\":" + properties.maxOutputTokens()
+                + responseFormat + thinking + "}";
     }
 
     private GatewayOutcome parseOutcome(String responseBody) {
@@ -125,6 +130,13 @@ public final class HttpAiModelGateway implements AiModelGateway {
             root = AgentJson.toJsonNode(responseBody);
         } catch (RuntimeException parseError) {
             throw new AiGatewayTransientException("模型响应不是合法 JSON");
+        }
+        String finishReason = root.path("choices").path(0).path("finish_reason").asText();
+        if ("length".equals(finishReason)) {
+            throw new AiSchemaInvalidException("模型输出被截断，请缩小任务范围或提高 max-output-tokens");
+        }
+        if ("content_filter".equals(finishReason)) {
+            throw new AiGatewayRejectedException("模型服务内容过滤，未生成分析结果");
         }
         JsonNode content = root.path("choices").path(0).path("message").path("content");
         if (!content.isTextual() || content.asText().isBlank()) {

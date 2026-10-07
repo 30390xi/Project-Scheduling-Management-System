@@ -23,7 +23,9 @@ public record AiGatewayProperties(
         Double autoAssignQualityThreshold,
         Double maxPessimisticOptimisticRatio,
         Integer maxLeafTaskMinutes,
-        Integer maxSubtasks) {
+        Integer maxSubtasks,
+        Integer maxOutputTokens,
+        String thinkingMode) {
 
     public static final String PROVIDER_DISABLED = "disabled";
     public static final String PROVIDER_OPENAI_COMPATIBLE = "openai-compatible";
@@ -66,12 +68,29 @@ public record AiGatewayProperties(
         if (maxSubtasks == null || maxSubtasks < 1) {
             maxSubtasks = 30;
         }
+        if (maxOutputTokens == null) {
+            maxOutputTokens = 8192;
+        }
+        if (maxOutputTokens < 256 || maxOutputTokens > 32768) {
+            throw new IllegalArgumentException("AI max-output-tokens 必须在 256..32768");
+        }
+        if (thinkingMode == null || thinkingMode.isBlank()) {
+            thinkingMode = "provider-default";
+        }
+        if (!java.util.Set.of("provider-default", "enabled", "disabled").contains(thinkingMode)) {
+            throw new IllegalArgumentException("AI thinking-mode 必须为 provider-default/enabled/disabled");
+        }
     }
 
     /** 仅供测试/默认场景使用的全默认实例；不能作为构造器，否则构造器绑定失效。 */
     public static AiGatewayProperties defaults() {
         return new AiGatewayProperties(null, null, null, null, null, null, null, null, null, null,
-                null, null, null, null, null);
+                null, null, null, null, null, null, null);
+    }
+
+    @Override
+    public String toString() {
+        return "AiGatewayProperties[provider=" + provider + ", credentials=REDACTED]";
     }
 
     /** 未配置或显式 disabled 都视为关闭；关闭不是错误，是明确降级。 */

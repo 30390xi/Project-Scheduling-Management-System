@@ -27,7 +27,7 @@ class HttpAiModelGatewayTest {
         server = MockRestServiceServer.bindTo(builder).build();
         var properties = new AiGatewayProperties("openai-compatible", "http://model.test",
                 "key-from-env", "test-model", null, null, null, null, null, true,
-                null, null, null, null, null);
+                null, null, null, null, null, null, null);
         gateway = new HttpAiModelGateway(properties, sanitizer, builder.build());
     }
 
@@ -42,6 +42,9 @@ class HttpAiModelGatewayTest {
                 .andExpect(method(HttpMethod.POST))
                 .andExpect(jsonPath("$.model").value("test-model"))
                 .andExpect(jsonPath("$.response_format.type").value("json_object"))
+                .andExpect(jsonPath("$.stream").value(false))
+                .andExpect(jsonPath("$.max_tokens").value(8192))
+                .andExpect(jsonPath("$.thinking").doesNotExist())
                 .andExpect(jsonPath("$.messages[0].role").value("system"))
                 .andExpect(jsonPath("$.messages[1].content").value(
                         org.hamcrest.Matchers.containsString("<<<UNTRUSTED_TASK_DATA")))
@@ -125,5 +128,43 @@ class HttpAiModelGatewayTest {
     private static String chatBody(String content) {
         return com.company.scheduler.agent.AgentJson.toJson(java.util.Map.of(
                 "choices", java.util.List.of(java.util.Map.of("message", java.util.Map.of("content", content)))));
+    }
+
+    @Test
+    void refusesTruncatedOrFilteredOutputEvenIfContentLooksValid() {
+        server.expect(requestTo("http://model.test/chat/completions"))
+                .andRespond(withSuccess("{\"choices\":[{\"finish_reason\":\"length\","
+                        + "\"message\":{\"content\":\"{}\"}}]}", MediaType.APPLICATION_JSON));
+        server.expect(requestTo("http://model.test/chat/completions"))
+                .andRespond(withSuccess("{\"choices\":[{\"finish_reason\":\"content_filter\"}]}",
+                        MediaType.APPLICATION_JSON));
+        assertThatThrownBy(() -> gateway.analyze(request("文本")))
+                .isInstanceOf(AiSchemaInvalidException.class).hasMessageContaining("截断");
+        assertThatThrownBy(() -> gateway.analyze(request("文本")))
+                .isInstanceOf(AiGatewayRejectedException.class);
+        server.verify();
+    }
+
+    @Test
+    void networkFailureDoesNotExposeTransportMessageOrCause() {
+        server.expect(requestTo("http://model.test/chat/completions"))
+                .andRespond(withException(new java.io.IOException("sensitive-key-and-payload")));
+        assertThatThrownBy(() -> gateway.analyze(request("文本")))
+                .isInstanceOf(AiGatewayTransientException.class)
+                .hasMessageNotContaining("sensitive").hasNoCause();
+    }
+
+    @Test
+    void jsonModeCanBeDisabledForOtherCompatibleProviders() {
+        var properties = AiProviderHttpTest.properties(java.util.Map.of("json-mode", "false"));
+        RestClient.Builder builder = RestClient.builder().baseUrl("http://model.test");
+        var localServer = MockRestServiceServer.bindTo(builder).build();
+        var otherGateway = new HttpAiModelGateway(properties, sanitizer, builder.build());
+        localServer.expect(requestTo("http://model.test/chat/completions"))
+                .andExpect(jsonPath("$.response_format").doesNotExist())
+                .andExpect(jsonPath("$.thinking").doesNotExist())
+                .andRespond(withSuccess(chatBody("{}"), MediaType.APPLICATION_JSON));
+        otherGateway.analyze(request("文本"));
+        localServer.verify();
     }
 }
